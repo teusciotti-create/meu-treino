@@ -1,7 +1,7 @@
 // Fonte oficial da rotina. IDs estáveis preservam comparações no histórico.
 const ex = (id, name, sets, target, rest, cue, extra = {}) => ({ id, name, sets, target, rest, cue, ...extra });
 export const VERSION = '2026-10-v2';
-export const DEFAULTS = { start: '05:10', deadline: '06:30', vibration: true, vibrationMode:'long', wakeLock: true, transition: 45, circuitRest: 10, roundRest: 60, rests: {} };
+export const DEFAULTS = { theme:'default', start: '05:10', deadline: '06:30', vibration: true, vibrationMode:'long', wakeLock: true, transition: 45, circuitRest: 10, roundRest: 60, rests: {} };
 export const WORKOUTS = {
   superiorA: { name: 'Superior A', mode: 'straight_sets', exercises: [
     ex('push', 'Flexão com mochila', 3, '6–12', 90, 'Mantenha o tronco alinhado. Prenda bem a mochila como carga.', { image: 'push-up', imageNote: 'Movimento base sem carga; use a mochila bem presa.' }),

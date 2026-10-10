@@ -18,6 +18,7 @@ export function start(s, now = Date.now()) {
   const e = current(s).exercise;
   s.state = e.seconds ? 'ACTIVE_TIMED' : 'ACTIVE_REPS';
   s.stepStartedAt = now;
+  delete s.completedSides;
   s.stepTimingComplete = s.timing?.full || s.timing?.coveredFrom <= now;
   if (e.seconds) { s.timerEnd = now + e.seconds * 1000; s.timerRemaining = e.seconds * 1000; }
 }
@@ -31,6 +32,25 @@ export function complete(s, values = {}, now = Date.now()) {
   const validRep = n => Number.isInteger(n) && n >= 0 && n <= 999;
   if (!e.seconds && (e.unilateral ? !validRep(values.right) || !validRep(values.left) : !validRep(values.reps))) throw new Error('Preencha as repetições realizadas, incluindo os dois lados.');
   if (values.load != null && (!Number.isFinite(values.load) || values.load < 0 || values.load > 1000)) throw new Error('Informe uma carga válida ou deixe em branco.');
+  return recordCompletion(s, values, now);
+}
+// A execução e o preenchimento são independentes. Null representa dado desconhecido.
+export function finishExecution(s, now = Date.now()) {
+  if (!['ACTIVE_REPS','ACTIVE_TIMED'].includes(s.state)) return false;
+  const e=current(s).exercise;
+  if(e.unilateral && !(s.completedSides?.right && s.completedSides?.left)) throw new Error('Conclua os dois lados antes de registrar a série.');
+  return recordCompletion(s, {...(e.unilateral ? {right:null,left:null} : {reps:null}),load:null,...s.draft},now);
+}
+export function updateResult(s,index,values,now=Date.now()) {
+  const r=s.results[index];if(!r) throw new Error('Série não encontrada.');
+  for(const key of ['reps','right','left','load','durationSeconds']) if(key in values) {
+    const n=values[key],max=key==='load'?1000:key==='durationSeconds'?36000:999;
+    if(n!=null && (!Number.isFinite(n)||n<0||n>max||(['reps','right','left'].includes(key)&&!Number.isInteger(n)))) throw new Error('Informe um valor válido ou deixe em branco.');
+  }
+  Object.assign(r,values,{editedAt:now});return r;
+}
+function recordCompletion(s, values, now) {
+  const step=current(s),e=step.exercise;
   const activeSeconds=activeSince(s,s.stepStartedAt,now);
   s.results.push({ exerciseId: e.id, name: e.name, set: step.set, round: step.round || null, ...values, activeSeconds, activeTimingPartial:!s.stepTimingComplete, durationSeconds: e.seconds ? Math.max(0, (e.seconds * 1000 - Math.max(0, s.timerEnd - now)) / 1000) : null, completedAt: now });
   s.index++;
@@ -63,7 +83,7 @@ export function endWorkout(s,now=Date.now()) {
 }
 export function tick(s, now = Date.now()) {
   if (s.state === 'RESTING' && now >= s.timerEnd) { finishRest(s, s.timerEnd); return true; }
-  if (s.state === 'ACTIVE_TIMED' && now >= s.timerEnd) { complete(s, s.draft || {}, s.timerEnd); return true; }
+  if (s.state === 'ACTIVE_TIMED' && now >= s.timerEnd) { finishExecution(s, s.timerEnd); return true; }
   return false;
 }
 export function pause(s, now = Date.now()) {

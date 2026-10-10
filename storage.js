@@ -19,6 +19,7 @@ export function validateBackup(b) {
   const p = b.settings;
   if (!p || !time(p.start) || !time(p.deadline) || typeof p.vibration !== 'boolean' || typeof p.wakeLock !== 'boolean' || ![p.transition, p.circuitRest, p.roundRest].every(duration) || !p.rests || !Object.values(p.rests).every(duration)) throw new Error('Configurações inválidas no backup.');
   if(p.vibrationMode != null && !['short','long'].includes(p.vibrationMode)) throw new Error('Padrão de vibração inválido.');
+  if(p.theme != null && !['default','light','dark'].includes(p.theme)) throw new Error('Tema inválido.');
   const states = ['READY','ACTIVE_REPS','ACTIVE_TIMED','RESTING','REST_FINISHED','PAUSED','COMPLETED'];
   const number = (n, max = 1000) => n == null || (Number.isFinite(n) && n >= 0 && n <= max);
   const text = n => n == null || (typeof n === 'string' && n.length <= 500);

@@ -1,5 +1,5 @@
 import { WORKOUTS, WEEK, DEFAULTS } from './config.js';
-import { createSession, current, plan, start, complete, tick, finishRest, pause, resume, endWorkout, restStats, restRemaining, cardioAction, cardioElapsed, deadlineRemaining } from './engine.js';
+import { createSession, current, plan, start, finishExecution, updateResult, tick, finishRest, pause, resume, endWorkout, restStats, restRemaining, cardioAction, cardioElapsed, deadlineRemaining } from './engine.js';
 import { initializeTiming, timingSummary } from './timing.js';
 import { localDay, weeklyConsistency, exerciseProgress } from './metrics.js';
 import { weekChart, exerciseChart } from './charts.js';
@@ -20,9 +20,15 @@ function morning() {
   const left = deadlineRemaining(settings), now = new Date();
   return `<div class="morning ${left <= 300 ? 'urgent' : left <= 900 ? 'short' : ''}"><span data-clock>${now.toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit', hour12:false })}</span><span data-limit>${left > 0 ? `${Math.floor(left / 60)} min até ${settings.deadline}` : `Horário-limite ${settings.deadline} atingido`}</span></div>`;
 }
+function applyTheme() {
+  const rest=view==='workout' && session?.state==='RESTING',red=view==='workout' && session?.state==='REST_FINISHED';
+  const dark=settings?.theme==='dark' || (settings?.theme!=='light' && rest);
+  document.body.dataset.tone=red ? 'red' : dark ? 'dark' : 'light';
+  document.body.className=red?'red':dark?'dark':'';
+  document.body.classList.toggle('executing',view==='workout' && ['READY','ACTIVE_REPS','ACTIVE_TIMED'].includes(session?.state));
+}
 function shell(content, nav = false) {
-  const dark = view === 'workout' && session?.state === 'RESTING', red = view === 'workout' && session?.state === 'REST_FINISHED';
-  document.body.className = dark ? 'dark' : red ? 'red' : (view === 'workout' && ['READY','ACTIVE_REPS','ACTIVE_TIMED'].includes(session?.state)) ? 'executing' : '';
+  applyTheme();
   app.innerHTML = `<header><a href="#" data-action="home" class="brand"><span class="brand-mark">m.</span> meu treino</a><span class="local-badge">NO SEU RITMO</span></header>${morning()}<main>${content}</main>${nav ? `<nav aria-label="Navegação">${button('Hoje', 'home', view === 'home' ? 'nav active' : 'nav')}${button('Histórico', 'history', view === 'history' ? 'nav active' : 'nav')}${button('Evolução', 'evolution', view === 'evolution' ? 'nav active' : 'nav')}${button('Ajustes', 'settings', view === 'settings' ? 'nav active' : 'nav')}</nav>` : ''}<footer>Seu treino. Seus dados. No seu dispositivo.</footer>`;
 }
 const today = () => WEEK[new Date().getDay()];
@@ -41,14 +47,42 @@ function media(e) {
   return `<div class="demo pending"><span class="pending-symbol">↔</span><strong>${esc(e.name)}</strong><span>IMAGEM VERIFICADA PENDENTE</span></div>`;
 }
 function repFields(e, draft = {}) {
-  const field = (key, label) => `<label>${label}<input name="${key}" type="number" inputmode="numeric" min="0" max="999" step="1" required value="${esc(draft[key])}" placeholder="—"></label>`;
-  return e.unilateral ? `<div class="side-title"><span>Complete os dois lados</span>${button('Trocar ordem ⇄', 'swap', 'text-button')}</div><div class="rep-grid ${draft.leftFirst ? 'left-first' : ''}">${field('right', 'Direito')}${field('left', 'Esquerdo')}</div>` : field('reps', 'Repetições realizadas');
+  const field = (key, label) => `<label>${label}<input name="${key}" type="number" inputmode="numeric" min="0" max="999" step="1" value="${esc(draft[key])}" placeholder="—"></label>`;
+  return e.unilateral ? `<div class="side-title"><span>Complete os dois lados</span></div><div class="rep-grid ${draft.leftFirst ? 'left-first' : ''}">${field('right', 'Direito')}${field('left', 'Esquerdo')}</div>` : field('reps', 'Repetições realizadas');
 }
 function loadField(draft = {}) { return `<label class="load">Carga (kg) · opcional<input name="load" type="number" min="0" max="1000" step="0.1" inputmode="decimal" value="${esc(draft.load)}" placeholder="Sem carga informada"></label>`; }
+function recordEditor(s,index) {
+  const r=s.results[index];if(!r)return '';
+  const e=s.steps[index].exercise;
+  const previous=s.results.slice(0,index).reverse().find(x=>x.exerciseId===r.exerciseId && x.load!=null);
+  return `<section class="record-panel"><h2>Registrar série concluída</h2><p>${esc(r.name)} · ${r.round ? 'volta '+r.round : 'série '+r.set}</p><form class="record-form" data-result-index="${index}">${e.seconds ? '<p>Duração registrada: '+fmt(r.durationSeconds)+'</p>' : repFields(e,r)}${loadField(r)}${previous ? button('Usar carga anterior: '+previous.load+' kg','use-load','text-button', 'type="button" data-index="'+index+'" data-load="'+previous.load+'"') : ''}${e.sideNote ? '<label>Observação<input name="side" maxlength="80" value="'+esc(r.side)+'"></label>' : ''}<small data-record-status>Salvamento automático · pode preencher depois no histórico.</small></form></section>`;
+}
+function readRecord(form) {
+  const index=Number(form.dataset.resultIndex),values={};
+  for(const input of form.querySelectorAll('input[name]')) {
+    if(!input.validity.valid) {form.querySelector('[data-record-status]').textContent='Confira o valor informado.';return false;}
+    values[input.name]=input.name==='side' ? input.value : input.value===''?null:Number(input.value);
+  }
+  updateResult(session,index,values);return true;
+}
+function restControls() {
+  const s=session,e=current(s).exercise;
+  return s.state==='RESTING' ? `<div class="adjust">${button('+15s','add15','secondary')}${button('+30s','add30','secondary')}</div>${button('PULAR DESCANSO','skip-rest','secondary')}` : button(s.steps[s.index-1]?.exercise.id===e.id?'INICIAR PRÓXIMA SÉRIE':'INICIAR PRÓXIMO EXERCÍCIO','start');
+}
+function updateRestScreen() {
+  applyTheme();
+  const resting=session.state==='RESTING';
+  document.querySelector('.rest-screen > .eyebrow').textContent=resting?'RECUPERE O FÔLEGO':'DESCANSO CONCLUÍDO';
+  document.querySelector('.rest-screen > h1').textContent=resting?'Descansando.':'Hora de treinar!';
+  document.querySelector('[data-rest-controls]').innerHTML=restControls();
+  document.querySelector('[data-timer]').textContent=signedRest(session);
+  document.querySelector('#rest-progress').value=Math.max(0,restRemaining(session));
+  document.querySelector('[data-rest-excess]').textContent=resting ? `Programado: ${fmt(session.restPlannedSeconds)}` : `Excedente: ${fmt(Math.floor(restStats(session).excessSeconds))} · descanso real: ${fmt(Math.floor(restStats(session).actualSeconds))}`;
+}
 function workout() {
   view = 'workout'; if (session.state === 'COMPLETED') return summary();
   const s = session, step = current(s), e = step.exercise, done = s.results.length, total = s.steps.length;
-  const top = `<div class="workout-top"><span class="eyebrow">${esc(s.name)}</span>${button('Pausar', 'pause', 'text-button')}</div><div class="progress"><div style="width:${done / total * 100}%"></div></div>`;
+  const top = `<div class="workout-top"><span class="eyebrow">${esc(s.name)}</span><div>${button('Ajustes', 'settings', 'text-button')}${button('Pausar', 'pause', 'text-button')}</div></div><div class="progress"><div style="width:${done / total * 100}%"></div></div>`;
   if (s.state === 'PAUSED') {
     shell(`<div class="eyebrow">${esc(s.name)}</div><h1>Um respiro.</h1><p>Sua sessão está pausada. As séries registradas estão salvas.</p><section class="hero-card"><h2>${esc(e.name)}</h2><p>${done} de ${total} etapas concluídas</p>${button('RETOMAR SESSÃO', 'resume')}${button('VOLTAR AO INÍCIO', 'home', 'secondary')}${button('ENCERRAR ANTECIPADAMENTE', 'abandon', 'text-button danger')}</section>`); return;
   }
@@ -59,18 +93,18 @@ function workout() {
       <progress id="rest-progress" max="${s.restPlannedSeconds || 1}" value="${Math.max(0,restRemaining(s))}" aria-label="Tempo de descanso restante"></progress>
       <p class="rest-excess" data-rest-excess>${resting ? `Programado: ${fmt(s.restPlannedSeconds)}` : `Excedente: ${fmt(Math.floor(restStats(s).excessSeconds))} · descanso real: ${fmt(Math.floor(restStats(s).actualSeconds))}`}</p>
       <div class="next"><span>A SEGUIR · ${s.mode === 'circuit' ? `VOLTA ${step.round} DE 3` : `SÉRIE ${step.set} DE ${e.sets}`}</span><h2>${esc(e.name)}</h2><p>${esc(e.target)}</p></div>
-      ${resting ? `<div class="adjust">${button('+15s', 'add15', 'secondary')}${button('+30s', 'add30', 'secondary')}</div>${button('PULAR DESCANSO', 'skip-rest', 'secondary')}` : button(s.steps[s.index-1]?.exercise.id === e.id ? 'INICIAR PRÓXIMA SÉRIE' : 'INICIAR PRÓXIMO EXERCÍCIO', 'start')}</section>`); return;
+      <div data-rest-controls>${restControls()}</div>${recordEditor(s,s.index-1)}</section>`); return;
   }
-  const timed = e.seconds, active = s.state === 'ACTIVE_TIMED', ready = s.state === 'READY';
-  shell(`${top}<div class="eyebrow step-label">${s.mode === 'circuit' ? `VOLTA ${step.round} DE 3 · EXERCÍCIO ${(s.index % 4)+1} DE 4` : `SÉRIE ${step.set} DE ${e.sets}`}</div><h1 class="exercise-title">${esc(e.name)}</h1>${media(e)}<div class="target"><span>META</span><strong>${esc(e.target)}</strong><small>${e.unilateral ? 'Ambos os lados = uma série' : `${done + 1} de ${total} etapas`}</small></div><p class="cue">${esc(e.cue)}</p><form id="set-form">${timed ? `${active ? `<div class="timer compact" data-timer>${fmt((s.timerEnd - Date.now())/1000)}</div><progress id="timed-progress" max="${e.seconds}" value="${Math.max(0,(s.timerEnd-Date.now())/1000)}" aria-label="Tempo do exercício restante"></progress>` : '<p>O cronômetro começa quando você tocar em iniciar.</p>'}${loadField(s.draft)}${button(active ? 'ENCERRAR SÉRIE AGORA' : 'INICIAR SÉRIE · 60s', active ? 'end-timed' : 'start')}` : `${ready ? button('INICIAR SÉRIE', 'start') : `${repFields(e, s.draft)}${loadField(s.draft)}${e.sideNote ? `<label>Lado / observação (opcional)<input name="side" value="${esc(s.draft?.side)}" placeholder="Total realizado, lado alternado…" maxlength="80"></label>` : ''}<button type="submit" class="primary">CONCLUÍ A SÉRIE ✓</button>`}`}</form><p class="saved-label">${done} de ${total} séries registradas · salvamento automático</p>`);
+  const timed = e.seconds, ready = s.state === 'READY';
+  shell(`${top}<div class="eyebrow step-label">${s.mode === 'circuit' ? `VOLTA ${step.round} DE 3 · EXERCÍCIO ${(s.index % 4)+1} DE 4` : `SÉRIE ${step.set} DE ${e.sets}`}</div><h1 class="exercise-title">${esc(e.name)}</h1>${media(e)}<div class="target"><span>META</span><strong>${esc(e.target)}</strong><small>${e.unilateral ? 'Ambos os lados = uma série' : `${done + 1} de ${total} etapas`}</small></div><p class="cue">${esc(e.cue)}</p><div id="execution-controls">${ready ? button(timed ? 'INICIAR SÉRIE · '+e.seconds+'s' : 'INICIAR SÉRIE','start') : `${timed ? '<div class="timer compact" data-timer>'+fmt((s.timerEnd-Date.now())/1000)+'</div><progress id="timed-progress" max="'+e.seconds+'" value="'+Math.max(0,(s.timerEnd-Date.now())/1000)+'" aria-label="Tempo do exercício restante"></progress>' : ''}${e.unilateral ? '<p>Conclua ambos os lados antes de terminar a série.</p><div class="rep-grid">'+['right','left'].map(side=>button((s.completedSides?.[side]?'✓ ':'')+(side==='right'?'Lado direito concluído':'Lado esquerdo concluído'),'finish-side','secondary','data-side="'+side+'" '+(s.completedSides?.[side]?'disabled':' aria-pressed="false"'))).join('')+'</div>' : ''}${button('CONCLUÍ A SÉRIE ✓','finish-set','primary',e.unilateral && !(s.completedSides?.right && s.completedSides?.left)?'disabled':'')}`}</div><p class="saved-label">${done} de ${total} séries registradas · salvamento automático</p>`);
 }
 function summary() {
   view = 'summary'; const s = session, left = deadlineRemaining(settings), c = s.cardio, elapsed = cardioElapsed(c), actual = s.endedAt || Date.now();
-  shell(`<div class="eyebrow">${s.steps.length ? 'SESSÃO REGISTRADA' : 'SEU CARDIO DE HOJE'}</div><h1>${s.steps.length ? (s.results.length === s.steps.length ? 'Treino feito.' : 'Até a próxima.') : 'Vamos em frente.'}</h1><p class="muted">${esc(s.name)} · ${date(s.startedAt)}</p>${s.steps.length ? `<div class="stats summary-stats"><div><strong>${fmt((actual-s.startedAt)/1000)}</strong><span>duração do treino</span></div><div><strong>${s.results.length}/${s.steps.length}</strong><span>séries realizadas</span></div></div>${timeDetails(s)}${resultList(s)}${s.index < s.steps.length ? `<details><summary>Etapas não realizadas (${s.steps.length-s.index})</summary>${s.steps.slice(s.index).map(t => `<p>${esc(t.exercise.name)} · série ${t.set}</p>`).join('')}</details>` : ''}` : ''}
+  shell(`<div class="eyebrow">${s.steps.length ? 'SESSÃO REGISTRADA' : 'SEU CARDIO DE HOJE'}</div><h1>${s.steps.length ? (s.results.length === s.steps.length ? 'Treino feito.' : 'Até a próxima.') : 'Vamos em frente.'}</h1><p class="muted">${esc(s.name)} · ${date(s.startedAt)}</p>${s.steps.length ? `<div class="stats summary-stats"><div><strong>${fmt((actual-s.startedAt)/1000)}</strong><span>duração do treino</span></div><div><strong>${s.results.length}/${s.steps.length}</strong><span>séries realizadas</span></div></div>${timeDetails(s)}${s.results.length ? recordEditor(s,s.results.length-1) : ''}${resultList(s,true)}${s.index < s.steps.length ? `<details><summary>Etapas não realizadas (${s.steps.length-s.index})</summary>${s.steps.slice(s.index).map(t => `<p>${esc(t.exercise.name)} · série ${t.set}</p>`).join('')}</details>` : ''}` : ''}
   <section class="hero-card"><div class="eyebrow">CARDIO PLANEJADO</div><h2>${esc(c.name)} · ${c.plannedSeconds/60} min</h2><p>${Math.floor(left/60)} minutos disponíveis até ${settings.deadline}.</p>${left < c.plannedSeconds && c.state === 'READY' ? '<p class="conflict">O cardio planejado ultrapassa o tempo disponível. Você pode fazer menos tempo ou finalizar sem cardio.</p>' : ''}<p>Planejado: ${fmt(c.plannedSeconds)} · realizado: <strong data-cardio>${fmt(elapsed)}</strong></p>${c.state === 'ACTIVE' ? `<div class="timer compact" data-cardio>${fmt(elapsed)}</div>${button('PAUSAR CARDIO', 'cardio-pause')}${button('CONCLUIR CARDIO', 'cardio-finish', 'secondary')}` : c.state === 'PAUSED' ? `${button('RETOMAR CARDIO', 'cardio-start')}${button('CONCLUIR CARDIO', 'cardio-finish', 'secondary')}` : c.state === 'READY' ? `<label>Meta desta sessão (minutos)<input id="cardio-target" type="number" inputmode="numeric" min="1" max="240" value="${c.plannedSeconds/60}"></label>${button('INICIAR CARDIO', 'cardio-start')}` : '<p class="success">Cardio concluído e salvo.</p>'}<p class="muted small">O cronômetro não encerra o cardio automaticamente.</p></section>${button('SALVAR E FINALIZAR', 'finalize', 'secondary')}`);
 }
 function resultList(s, edit = false) {
-  return `<div class="result-list">${s.results.map((r,i) => `<div><strong>${esc(r.name)}</strong><span>${r.round ? `Volta ${r.round}` : `Série ${r.set}`} · ${r.durationSeconds != null ? `${Math.round(r.durationSeconds)}s` : r.right != null ? `D ${r.right} / E ${r.left}` : `${r.reps} reps`}${r.load != null ? ` · ${r.load} kg` : ''}${r.side ? ` · ${esc(r.side)}` : ''}</span>${r.activeSeconds != null ? `<small>Execução${r.activeTimingPartial ? ' parcial medida' : ''}: ${fmt(Math.floor(r.activeSeconds))}</small>` : ''}${edit ? button('Editar registro', 'edit-result', 'text-button', `data-id="${esc(s.id)}" data-index="${i}"`) : ''}</div>`).join('')}</div>`;
+  return `<div class="result-list">${s.results.map((r,i) => `<div><strong>${esc(r.name)}</strong><span>${r.round ? `Volta ${r.round}` : `Série ${r.set}`} · ${r.durationSeconds != null ? `${Math.round(r.durationSeconds)}s` : s.steps[i]?.exercise.unilateral ? `D ${r.right ?? '—'} / E ${r.left ?? '—'}` : r.reps==null ? 'Repetições não informadas' : `${r.reps} reps`}${r.load != null ? ` · ${r.load} kg` : ' · carga desconhecida'}${r.side ? ` · ${esc(r.side)}` : ''}</span>${r.activeSeconds != null ? `<small>Execução${r.activeTimingPartial ? ' parcial medida' : ''}: ${fmt(Math.floor(r.activeSeconds))}</small>` : ''}${edit ? button('Editar registro', 'edit-result', 'text-button', `data-id="${esc(s.id)}" data-index="${i}"`) : ''}</div>`).join('')}</div>`;
 }
 function timeDetails(s) {
   if(!s.steps.length) return '';
@@ -98,9 +132,9 @@ async function evolution() {
 }
 function settingsPage() {
   view = 'settings'; const exercises = Object.values(WORKOUTS).flatMap(w => w.exercises);
-  shell(`<div class="eyebrow">DO SEU JEITO</div><h1>Ajustes.</h1><form id="settings-form"><section class="settings-section"><h2>Sua manhã</h2><div class="rep-grid"><label>Início habitual<input type="time" name="start" value="${settings.start}" required></label><label>Retorno para casa<input type="time" name="deadline" value="${settings.deadline}" required></label></div><label class="toggle"><span>Vibrar ao terminar o descanso</span><input type="checkbox" name="vibration" ${settings.vibration ? 'checked' : ''}></label><label class="toggle"><span>Tentar manter a tela ligada</span><input type="checkbox" name="wakeLock" ${settings.wakeLock ? 'checked' : ''}></label><p class="muted small">${'wakeLock' in navigator ? 'Tela ligada quando o navegador permitir.' : 'Este navegador não oferece controle de tela ligada.'} Vibração e avisos podem não funcionar com a tela bloqueada. Sons desativados.</p></section><section class="settings-section"><h2>Descansos em segundos</h2><p class="muted small">Aplicados a novas sessões. Sessões em andamento preservam seus tempos.</p>${[['transition','Transição entre exercícios de força'],['circuitRest','Entre exercícios de core'],['roundRest','Entre voltas de core']].map(([key,label]) => `<label class="rest-setting"><span>${label}</span><input type="number" name="${key}" min="0" max="600" required value="${settings[key]}"></label>`).join('')}<details><summary>Descansos individuais de força</summary>${exercises.filter(e => e.rest !== 10).map(e => `<label class="rest-setting"><span>${esc(e.name)}</span><input type="number" name="rest-${e.id}" min="0" max="600" required value="${settings.rests[e.id] ?? e.rest}"></label>`).join('')}</details>${button('Restaurar descansos padrão', 'reset-rests', 'text-button')}</section><button type="submit" class="primary">SALVAR AJUSTES</button></form><section class="settings-section"><h2>Backup dos seus dados</h2><p class="muted">Faça uma cópia antes de trocar de celular ou limpar os dados do navegador.</p>${button('EXPORTAR BACKUP JSON', 'export', 'secondary')}<label class="file-label">IMPORTAR BACKUP JSON<input type="file" id="import" accept="application/json,.json"></label></section><details class="settings-section"><summary>Créditos e imagens</summary><p>Ilustrações: <a href="https://github.com/bryllim/workout-guide" target="_blank" rel="noopener">Workout Guide, Bryl Lim</a>; poses derivadas de Everkinetic. Licença <a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" rel="noopener">CC BY-SA 4.0</a>. Arquivos locais, sem alterações. Correspondências e atribuições por quadro em <a href="./assets/image-credits.json">image-credits.json</a> e <a href="./IMAGENS.md">documentação</a>.</p><p>Exercícios sem imagem verificada mostram uma apresentação neutra e instrução técnica.</p></details>${registration?.waiting ? button('APLICAR ATUALIZAÇÃO', 'update', 'secondary') : ''}`, true);
+  shell(`<div class="eyebrow">DO SEU JEITO</div><h1>Ajustes.</h1>${session && !session.finalized ? button('VOLTAR À SESSÃO','return-session','secondary') : ''}<form id="settings-form"><section class="settings-section"><h2>Aparência</h2><label>Tema<select id="theme-choice" name="theme">${[['default','Padrão'],['light','Claro'],['dark','Escuro']].map(([v,label])=>'<option value="'+v+'" '+((settings.theme||'default')===v?'selected':'')+'>'+label+'</option>').join('')}</select></label><p class="muted small">Aplicado e salvo imediatamente. O descanso concluído fica vermelho em todos os temas.</p></section><section class="settings-section"><h2>Sua manhã</h2><div class="rep-grid"><label>Início habitual<input type="time" name="start" value="${settings.start}" required></label><label>Retorno para casa<input type="time" name="deadline" value="${settings.deadline}" required></label></div><label class="toggle"><span>Vibrar ao terminar o descanso</span><input type="checkbox" name="vibration" ${settings.vibration ? 'checked' : ''}></label><label class="toggle"><span>Tentar manter a tela ligada</span><input type="checkbox" name="wakeLock" ${settings.wakeLock ? 'checked' : ''}></label><p class="muted small">${'wakeLock' in navigator ? 'Tela ligada quando o navegador permitir.' : 'Este navegador não oferece controle de tela ligada.'} Vibração e avisos podem não funcionar com a tela bloqueada. Sons desativados.</p></section><section class="settings-section"><h2>Descansos em segundos</h2><p class="muted small">Aplicados a novas sessões. Sessões em andamento preservam seus tempos.</p>${[['transition','Transição entre exercícios de força'],['circuitRest','Entre exercícios de core'],['roundRest','Entre voltas de core']].map(([key,label]) => `<label class="rest-setting"><span>${label}</span><input type="number" name="${key}" min="0" max="600" required value="${settings[key]}"></label>`).join('')}<details><summary>Descansos individuais de força</summary>${exercises.filter(e => e.rest !== 10).map(e => `<label class="rest-setting"><span>${esc(e.name)}</span><input type="number" name="rest-${e.id}" min="0" max="600" required value="${settings.rests[e.id] ?? e.rest}"></label>`).join('')}</details>${button('Restaurar descansos padrão', 'reset-rests', 'text-button')}</section><button type="submit" class="primary">SALVAR AJUSTES</button></form><section class="settings-section"><h2>Backup dos seus dados</h2><p class="muted">Faça uma cópia antes de trocar de celular ou limpar os dados do navegador.</p>${button('EXPORTAR BACKUP JSON', 'export', 'secondary')}<label class="file-label">IMPORTAR BACKUP JSON<input type="file" id="import" accept="application/json,.json"></label></section><details class="settings-section"><summary>Créditos e imagens</summary><p>Ilustrações: <a href="https://github.com/bryllim/workout-guide" target="_blank" rel="noopener">Workout Guide, Bryl Lim</a>; poses derivadas de Everkinetic. Licença <a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" rel="noopener">CC BY-SA 4.0</a>. Arquivos locais, sem alterações. Correspondências e atribuições por quadro em <a href="./assets/image-credits.json">image-credits.json</a> e <a href="./IMAGENS.md">documentação</a>.</p><p>Exercícios sem imagem verificada mostram uma apresentação neutra e instrução técnica.</p></details>${registration?.waiting ? button('APLICAR ATUALIZAÇÃO', 'update', 'secondary') : ''}`, true);
   document.querySelector('[name="vibration"]').closest('label').insertAdjacentHTML('afterend',`<label>Padrão de vibração<select name="vibrationMode"><option value="short" ${settings.vibrationMode==='short' ? 'selected' : ''}>Curta</option><option value="long" ${settings.vibrationMode==='long' ? 'selected' : ''}>Longa · cerca de 4 segundos</option></select></label>${button('Testar vibração','test-vibration','secondary')}`);
-  document.querySelector('main').insertAdjacentHTML('beforeend',`<section class="settings-section"><h2>Instalação e offline</h2><p class="muted small">${navigator.serviceWorker?.controller ? 'Cache ativo neste navegador.' : 'Aguarde o cache inicial com internet.'} Para instalar, use o menu do Chrome no endereço HTTPS publicado. Não é necessário limpar os dados do site.</p>${deferredInstall ? button('INSTALAR APLICATIVO','install','secondary') : ''}<p class="muted small">Versão da aplicação: 1.1.0</p></section>`);
+  document.querySelector('main').insertAdjacentHTML('beforeend',`<section class="settings-section"><h2>Instalação e offline</h2><p class="muted small">${navigator.serviceWorker?.controller ? 'Cache ativo neste navegador.' : 'Aguarde o cache inicial com internet.'} Para instalar, use o menu do Chrome no endereço HTTPS publicado. Não é necessário limpar os dados do site.</p>${deferredInstall ? button('INSTALAR APLICATIVO','install','secondary') : ''}<p class="muted small">Versão da aplicação: 1.2.0</p></section>`);
 }
 function vibrationPattern(mode=settings.vibrationMode) { return mode==='short' ? [100,50,100] : [350,250,350,250,350,250,350,250,350,250,350,250,350]; }
 async function notifyRest() {
@@ -109,23 +143,14 @@ async function notifyRest() {
   if(settings.vibration && navigator.vibrate) navigator.vibrate(vibrationPattern());
 }
 async function wakeControl() {
-  const active = settings?.wakeLock && session && ((view === 'workout' && session.state !== 'PAUSED') || (view === 'summary' && session.cardio.state === 'ACTIVE')) && document.visibilityState === 'visible';
+  const active = settings?.wakeLock && session && (!['PAUSED','COMPLETED'].includes(session.state) || session.cardio.state === 'ACTIVE') && document.visibilityState === 'visible';
   if (!active && wake) { await wake.release().catch(() => {}); wake = null; }
   if (active && !wake && 'wakeLock' in navigator) try { wake = await navigator.wakeLock.request('screen'); wake.addEventListener('release', () => wake = null); } catch { /* Navegador pode negar em economia de bateria. */ }
 }
 function render() { if (view === 'workout') workout(); else if (view === 'summary') summary(); wakeControl(); }
-function readDraft() {
-  const form = document.querySelector('#set-form'); if (!form || !session) return;
-  const values = new FormData(form), d = { ...session.draft };
-  for (const key of ['reps','right','left','load']) if (values.has(key)) {
-    const value = values.get(key) === '' ? null : Number(values.get(key));
-    if (key !== 'load' || value == null || (Number.isFinite(value) && value >= 0 && value <= 1000)) d[key] = value;
-  }
-  if (values.has('side')) d.side = values.get('side'); session.draft = d;
-}
 async function handle(action, el) {
   switch (action) {
-    case 'home': if (session && view === 'workout') { readDraft(); pause(session); await persist(); } if (session?.cardio.state === 'ACTIVE') { cardioAction(session, 'pause'); await persist(); } sessions = await allSessions(); home(); break;
+    case 'home': if (session && !['PAUSED','COMPLETED'].includes(session.state)) { pause(session); await persist(); } if (session?.cardio.state === 'ACTIVE') { cardioAction(session, 'pause'); await persist(); } sessions = await allSessions(); home(); break;
     case 'history': await history(); break;
     case 'evolution': await evolution(); break;
     case 'select-history': selecting=true;selectedIds.clear();await history();break;
@@ -147,18 +172,20 @@ async function handle(action, el) {
       if(!navigator.vibrate) notice('Este navegador não oferece vibração.');else notice(navigator.vibrate(vibrationPattern(mode)) ? 'Pedido de vibração enviado. Confira no aparelho.' : 'O navegador não aceitou o pedido de vibração.');break;
     }
     case 'settings': settingsPage(); break;
+    case 'return-session': view=session.state==='COMPLETED'?'summary':'workout';render();break;
+    case 'finish-side': session.completedSides ||= {};session.completedSides[el.dataset.side]=true;el.disabled=true;el.setAttribute('aria-pressed','true');el.textContent='✓ '+el.textContent;document.querySelector('[data-action="finish-set"]').disabled=!(session.completedSides.right && session.completedSides.left);await persist();break;
+    case 'finish-set': finishExecution(session);await persist();render();break;
+    case 'use-load': {const form=el.closest('.record-form');form.elements.load.value=el.dataset.load;if(readRecord(form))await persist();form.querySelector('[data-record-status]').textContent='Salvo neste dispositivo.';break;}
     case 'new': {
       if (resumable() && !confirm('Existe uma sessão salva. Criar outra sessão? A anterior continuará no histórico.')) return;
       session = createSession(selected, settings); await persist(); view = selected ? 'workout' : 'summary'; render(); break;
     }
     case 'recover': session = sessions.find(s => s.id === el.dataset.id); if (!session) return; if(session.state!=='COMPLETED') initializeTiming(session,Date.now());if(session.state==='REST_FINISHED' && session.restTrackingVersion!==2) session.restAlerted=true; if (session.state === 'PAUSED') resume(session); tick(session); await persist(); view = session.state === 'COMPLETED' ? 'summary' : 'workout'; render(); break;
-    case 'start': if (document.querySelector('#set-form') && !document.querySelector('#set-form').reportValidity()) return; readDraft(); if(navigator.vibrate) navigator.vibrate(0);start(session); await persist(); workout(); break;
-    case 'swap': readDraft(); session.draft.leftFirst = !session.draft.leftFirst; await persist(); workout(); break;
-    case 'end-timed': if (!document.querySelector('#set-form').reportValidity()) return; readDraft(); complete(session, session.draft); await persist(); render(); break;
-    case 'pause': readDraft(); pause(session); await persist(); render(); break;
+    case 'start': if(navigator.vibrate) navigator.vibrate(0);start(session); await persist(); workout(); break;
+    case 'pause': pause(session); await persist(); render(); break;
     case 'resume': resume(session); await persist(); render(); break;
-    case 'skip-rest': finishRest(session); await persist(); render(); break;
-    case 'add15': case 'add30': if (session.state === 'RESTING') { const sec = action === 'add15' ? 15 : 30; session.timerEnd += sec*1000; session.restPlannedSeconds += sec; await persist(); render(); } break;
+    case 'skip-rest': finishRest(session); await persist(); updateRestScreen(); break;
+    case 'add15': case 'add30': if (session.state === 'RESTING') { const sec = action === 'add15' ? 15 : 30; session.timerEnd += sec*1000; session.restPlannedSeconds += sec; await persist(); document.querySelector('#rest-progress').max=session.restPlannedSeconds;updateRestScreen(); } break;
     case 'abandon': if (!confirm('Encerrar esta sessão antes de completar todas as séries? Seus resultados serão preservados.')) return; endWorkout(session);await persist(); summary(); break;
     case 'cardio-start': {
       if (session.cardio.state === 'READY') { const target = Number(document.querySelector('#cardio-target').value); if (!Number.isInteger(target) || target < 1 || target > 240) throw new Error('Escolha uma meta de 1 a 240 minutos.'); session.cardio.sessionTargetSeconds = target*60; }
@@ -172,13 +199,13 @@ async function handle(action, el) {
     }
     case 'reset-rests': settings = {...settings, rests:{}, transition:45, circuitRest:10, roundRest:60}; await saveSettings(settings); settingsPage(); notice('Descansos padrão restaurados.'); break;
     case 'edit-result': {
-      const s = sessions.find(x => x.id === el.dataset.id), index = Number(el.dataset.index), r = s.results[index];
-      const dialog = document.createElement('dialog'); dialog.innerHTML = `<form id="edit-form"><h2>Editar registro</h2><p>${esc(r.name)} · série ${r.set}</p>${r.durationSeconds != null ? `<label>Duração real (segundos)<input type="number" name="durationSeconds" min="0" max="36000" step="0.1" required value="${r.durationSeconds}"></label>` : repFields({unilateral:r.right != null},r)}${loadField(r)}<label>Observação<input name="side" maxlength="80" value="${esc(r.side)}"></label><button type="submit" class="primary">SALVAR REGISTRO</button>${button('Cancelar','close-dialog','secondary')}</form>`; document.body.append(dialog); dialog.showModal();
-      dialog.querySelector('form').onsubmit = async ev => { ev.preventDefault(); const f = new FormData(ev.target); const updated = {...r}; for (const key of ['reps','right','left','durationSeconds','load']) if (f.has(key)) updated[key] = f.get(key) === '' ? null : Number(f.get(key)); updated.side = f.get('side'); updated.editedAt = Date.now(); s.results[index] = updated; try { await saveSession(s); dialog.remove(); await history(); } catch(err) { notice(err.message); } }; break;
+      const s = session?.id===el.dataset.id ? session : sessions.find(x => x.id === el.dataset.id), index = Number(el.dataset.index), r = s.results[index];
+      const dialog = document.createElement('dialog'); dialog.innerHTML = `<form id="edit-form"><h2>Editar registro</h2><p>${esc(r.name)} · série ${r.set}</p>${r.durationSeconds != null ? `<label>Duração real (segundos)<input type="number" name="durationSeconds" min="0" max="36000" step="0.1" required value="${r.durationSeconds}"></label>` : repFields({unilateral:s.steps[index]?.exercise.unilateral || r.right != null || r.left != null},r)}${loadField(r)}<label>Observação<input name="side" maxlength="80" value="${esc(r.side)}"></label><button type="submit" class="primary">SALVAR REGISTRO</button>${button('Cancelar','close-dialog','secondary')}</form>`; document.body.append(dialog); dialog.showModal();
+      dialog.querySelector('form').onsubmit = async ev => { ev.preventDefault(); const f = new FormData(ev.target); const updated = {...r}; for (const key of ['reps','right','left','durationSeconds','load']) if (f.has(key)) updated[key] = f.get(key) === '' ? null : Number(f.get(key)); updated.side = f.get('side'); try { updateResult(s,index,updated);if(s===session) await persist();else await saveSession(s); dialog.remove(); if(view==='summary')summary();else await history(); } catch(err) { notice(err.message); } }; break;
     }
     case 'close-dialog': el.closest('dialog').remove(); break;
     case 'install': if(!deferredInstall) return;await deferredInstall.prompt(); deferredInstall = null; home(); break;
-    case 'update': if (session && !session.finalized && (view==='workout' || session.cardio.state==='ACTIVE')) { notice('Pause e volte ao início antes de atualizar.'); return; } await writes; registration.waiting?.postMessage('SKIP_WAITING'); break;
+    case 'update': if (session && !session.finalized && (!['PAUSED','COMPLETED'].includes(session.state) || session.cardio.state==='ACTIVE')) { notice('Pause a sessão antes de atualizar.'); return; } await writes; registration.waiting?.postMessage('SKIP_WAITING'); break;
   }
   wakeControl();
 }
@@ -190,11 +217,13 @@ document.addEventListener('click', ev => { const el = ev.target.closest('[data-a
 app.addEventListener('submit', async ev => {
   ev.preventDefault(); if (busy) return; busy = true;
   try {
-    if (ev.target.id === 'set-form') { readDraft(); complete(session, session.draft); await persist(); render(); }
-    if (ev.target.id === 'settings-form') { const f = new FormData(ev.target); const next = {...settings, rests:{},vibrationMode:f.get('vibrationMode')}; for (const key of ['start','deadline']) next[key] = f.get(key); for (const key of ['vibration','wakeLock']) next[key] = f.has(key); for (const key of ['transition','circuitRest','roundRest']) next[key] = Number(f.get(key)); for (const [key,value] of f) if (key.startsWith('rest-')) next.rests[key.slice(5)] = Number(value); validateBackup({format:'meu-treino', schema:1, settings:next, sessions:[]}); await saveSettings(next); settings = next; notice('Ajustes salvos.'); }
+    if (ev.target.id === 'settings-form') { const f = new FormData(ev.target); const next = {...settings, rests:{},vibrationMode:f.get('vibrationMode'),theme:f.get('theme')}; for (const key of ['start','deadline']) next[key] = f.get(key); for (const key of ['vibration','wakeLock']) next[key] = f.has(key); for (const key of ['transition','circuitRest','roundRest']) next[key] = Number(f.get(key)); for (const [key,value] of f) if (key.startsWith('rest-')) next.rests[key.slice(5)] = Number(value); validateBackup({format:'meu-treino', schema:1, settings:next, sessions:[]}); await saveSettings(next); settings = next; notice('Ajustes salvos.'); }
   } catch(err) { notice(err.message); } finally { busy = false; }
 });
-app.addEventListener('input', () => { if (view === 'workout' && document.querySelector('#set-form')) { readDraft(); persist().catch(err => notice(err.message)); } });
+app.addEventListener('input', ev => {
+  const form=ev.target.closest('.record-form');if(!form || !session)return;
+  try {if(readRecord(form))persist().then(()=>{if(form.isConnected)form.querySelector('[data-record-status]').textContent='Salvo neste dispositivo.';if(view==='summary')document.querySelector('.result-list').outerHTML=resultList(session,true);}).catch(err=>notice(err.message));}catch(err){notice(err.message);}
+});
 app.addEventListener('error',ev=>{
   if(ev.target.id!=='exercise-image') return;
   const e=current(session)?.exercise;if(!e) return;brokenImages.add(e.image);
@@ -203,6 +232,7 @@ app.addEventListener('error',ev=>{
 },true);
 app.addEventListener('keydown',ev=>{const target=ev.target.closest('svg [data-action]');if(target && ['Enter',' '].includes(ev.key)) {ev.preventDefault();target.dispatchEvent(new MouseEvent('click',{bubbles:true}));}});
 app.addEventListener('change', async ev => {
+  if(ev.target.id==='theme-choice') {try {const next={...settings,theme:ev.target.value};await saveSettings(next);settings=next;applyTheme();notice('Tema salvo.');}catch(err){notice(err.message);}return;}
   if(ev.target.hasAttribute('data-session-select')) {const id=ev.target.dataset.sessionSelect;if(ev.target.checked) selectedIds.add(id);else selectedIds.delete(id);const b=document.querySelector('[data-action="delete-selected"]');b.disabled=!selectedIds.size;b.textContent=`Excluir selecionados (${selectedIds.size})`;}
   const filterIds={'evolution-exercise':'exercise','evolution-range':'range','evolution-metric':'metric','evolution-side':'side','week-anchor':'week'};
   if(filterIds[ev.target.id]) {filters[filterIds[ev.target.id]]=ev.target.value;if(ev.target.id==='evolution-exercise'){const e=Object.values(WORKOUTS).flatMap(w=>w.exercises).find(e=>e.id===filters.exercise);filters.metric=e?.seconds ? 'seconds' : 'reps';}await evolution();}
@@ -213,15 +243,15 @@ app.addEventListener('change', async ev => {
   }
 });
 async function timerTick() {
-  if (busy || !session || !['workout','summary'].includes(view)) return;
-  if (view === 'workout' && tick(session)) {
-    busy = true; try { await persist();await notifyRest(); render(); } catch(err) { notice(err.message); } finally { busy = false; } return;
+  if (busy || !session || session.finalized) return;
+  if (tick(session)) {
+    busy = true; try { await persist();await notifyRest(); if(session.state==='REST_FINISHED' && document.querySelector('[data-rest-controls]'))updateRestScreen();else render(); } catch(err) { notice(err.message); } finally { busy = false; } return;
   }
   if(view==='workout' && session.state==='REST_FINISHED' && !session.restSkipped && !session.restAlerted) {busy=true;try {await notifyRest();}catch(err){notice(err.message);}finally{busy=false;}return;}
   const remaining = (session.timerEnd-Date.now())/1000;
   document.querySelectorAll('[data-timer]').forEach(e => e.textContent = ['RESTING','REST_FINISHED'].includes(session.state) ? signedRest(session) : fmt(remaining));
   for (const id of ['rest-progress','timed-progress']) { const p = document.getElementById(id); if (p) p.value = Math.max(0,id==='rest-progress' ? restRemaining(session) : remaining); }
-  const excess=document.querySelector('[data-rest-excess]');if(excess && session.state==='REST_FINISHED') excess.textContent=`Excedente: ${fmt(Math.floor(restStats(session).excessSeconds))} · descanso real: ${fmt(Math.floor(restStats(session).actualSeconds))}`;
+  const excess=document.querySelector('[data-rest-excess]');if(excess) excess.textContent=session.state==='REST_FINISHED' ? `Excedente: ${fmt(Math.floor(restStats(session).excessSeconds))} · descanso real: ${fmt(Math.floor(restStats(session).actualSeconds))}` : `Programado: ${fmt(session.restPlannedSeconds)}`;
   document.querySelectorAll('[data-cardio]').forEach(e => e.textContent = fmt(cardioElapsed(session.cardio)));
   if (view === 'summary' && session.cardio.state === 'ACTIVE' && !session.cardio.targetNotified && cardioElapsed(session.cardio) >= (session.cardio.sessionTargetSeconds || session.cardio.plannedSeconds)) { session.cardio.targetNotified = true; await persist(); notice('Meta de cardio atingida. Conclua quando decidir.'); }
 }
